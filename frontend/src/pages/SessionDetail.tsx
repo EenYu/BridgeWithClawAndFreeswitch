@@ -382,7 +382,13 @@ function upsertLatestPartialTranscript(
 
   const [latest, ...rest] = current;
   if (latest.kind === "partial") {
-    return [next, ...rest];
+    return [
+      {
+        ...next,
+        text: mergeTranscriptText(latest.text, next.text),
+      },
+      ...rest,
+    ];
   }
 
   return [next, ...current].slice(0, 50);
@@ -395,15 +401,111 @@ function prependFinalTranscript(current: TranscriptEntry[], next: TranscriptEntr
 
 function upsertRecentLog(current: SessionLogEntry[], next: SessionLogEntry): SessionLogEntry[] {
   const existingIndex = current.findIndex((entry) => entry.id === next.id);
+  const merged =
+    existingIndex >= 0 ? mergePartialLogEntry(current[existingIndex], next) : next;
+
   if (existingIndex === 0) {
-    return [next, ...current.slice(1)];
+    return [merged, ...current.slice(1)];
   }
 
   if (existingIndex > 0) {
-    return [next, ...current.slice(0, existingIndex), ...current.slice(existingIndex + 1)].slice(0, 50);
+    return [merged, ...current.slice(0, existingIndex), ...current.slice(existingIndex + 1)].slice(0, 50);
   }
 
   return [next, ...current].slice(0, 50);
+}
+
+function mergePartialLogEntry(previous: SessionLogEntry, next: SessionLogEntry): SessionLogEntry {
+  if (previous.id !== next.id || !next.id.endsWith("-stt-partial")) {
+    return next;
+  }
+
+  const prefix = resolveLogPrefix(next.message);
+  const mergedText = mergeTranscriptText(extractLogText(previous.message), extractLogText(next.message));
+
+  return {
+    ...next,
+    message: prefix ? `${prefix} ${mergedText}` : mergedText,
+  };
+}
+
+function resolveLogPrefix(message: string): string {
+  const separatorIndex = message.indexOf(":");
+  return separatorIndex >= 0 ? message.slice(0, separatorIndex + 1) : "";
+}
+
+function extractLogText(message: string): string {
+  const separatorIndex = message.indexOf(":");
+  return separatorIndex >= 0 ? message.slice(separatorIndex + 1).trimStart() : message;
+}
+
+function mergeTranscriptText(previous: string, incoming: string): string {
+  if (!previous) {
+    return incoming;
+  }
+
+  if (!incoming || incoming === previous) {
+    return previous;
+  }
+
+  if (incoming.startsWith(previous)) {
+    return incoming;
+  }
+
+  if (previous.endsWith(incoming)) {
+    return previous;
+  }
+
+  const normalizedPrevious = normalizeTranscriptText(previous);
+  const normalizedIncoming = normalizeTranscriptText(incoming);
+  if (normalizedIncoming && normalizedPrevious) {
+    if (normalizedIncoming.startsWith(normalizedPrevious)) {
+      return incoming;
+    }
+
+    const normalizedPrefixLength = findCommonPrefixLength(normalizedPrevious, normalizedIncoming);
+    if (
+      normalizedPrefixLength >= 2 &&
+      normalizedIncoming.length >= Math.floor(normalizedPrevious.length * 0.8)
+    ) {
+      return incoming;
+    }
+  }
+
+  const overlapLength = findOverlapLength(previous, incoming);
+  if (overlapLength > 0) {
+    return `${previous}${incoming.slice(overlapLength)}`;
+  }
+
+  return `${previous}${incoming}`;
+}
+
+function findOverlapLength(previous: string, incoming: string): number {
+  const maxLength = Math.min(previous.length, incoming.length);
+
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (previous.slice(-length) === incoming.slice(0, length)) {
+      return length;
+    }
+  }
+
+  return 0;
+}
+
+function findCommonPrefixLength(previous: string, incoming: string): number {
+  const maxLength = Math.min(previous.length, incoming.length);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    if (previous[index] !== incoming[index]) {
+      return index;
+    }
+  }
+
+  return maxLength;
+}
+
+function normalizeTranscriptText(value: string): string {
+  return value.replace(/[\s,.!?;:，。！？；：、]/g, "");
 }
 
 export default SessionDetail;

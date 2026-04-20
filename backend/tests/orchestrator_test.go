@@ -238,6 +238,9 @@ func TestOrchestratorFinalTranscriptTriggersOpenClawAndTTS(t *testing.T) {
 	if current.State != session.StateSpeaking {
 		t.Fatalf("expected speaking state, got %s", current.State)
 	}
+	if current.LastSentToOpenClaw != "need help" {
+		t.Fatalf("expected last sent transcript to be tracked, got %q", current.LastSentToOpenClaw)
+	}
 
 	assertEventTypes(t, events.events,
 		bridgews.EventSessionCreated,
@@ -250,6 +253,99 @@ func TestOrchestratorFinalTranscriptTriggersOpenClawAndTTS(t *testing.T) {
 	assertSessionSummaryPayload(t, events.events[2], created.ID, "call-200", session.StateThinking)
 	assertTTSStartedPayload(t, events.events[3], session.StateSpeaking)
 	assertSessionSummaryPayload(t, events.events[4], created.ID, "call-200", session.StateSpeaking)
+}
+
+func TestOrchestratorFinalTranscriptSendsOnlyIncrementalText(t *testing.T) {
+	testCases := []struct {
+		name          string
+		firstFinal    string
+		secondFinal   string
+		expectedDelta string
+	}{
+		{
+			name:          "accumulated final",
+			firstFinal:    "need help",
+			secondFinal:   "need help with billing",
+			expectedDelta: "with billing",
+		},
+		{
+			name:          "definite utterance accumulation",
+			firstFinal:    "Welcome to free switch",
+			secondFinal:   "Welcome to free switch the future of voice",
+			expectedDelta: "the future of voice",
+		},
+		{
+			name:          "scheduled silence final accumulation",
+			firstFinal:    "Hello",
+			secondFinal:   "Hello I need support",
+			expectedDelta: "I need support",
+		},
+		{
+			name:          "trim leading punctuation from delta",
+			firstFinal:    "\u4f60\u597d\uff0c\u5e2e\u6211\u67e5\u4e00\u4e0b\u5317\u4eac\u4eca\u5929\u7684\u5929\u6c14",
+			secondFinal:   "\u4f60\u597d\uff0c\u5e2e\u6211\u67e5\u4e00\u4e0b\u5317\u4eac\u4eca\u5929\u7684\u5929\u6c14\u3002\u4e0b\u5348\u4f1a\u4e0d\u4f1a\u4e0b\u96e8",
+			expectedDelta: "\u4e0b\u5348\u4f1a\u4e0d\u4f1a\u4e0b\u96e8",
+		},
+		{
+			name:          "ignore punctuation rewrite inside accumulated prefix",
+			firstFinal:    "\u60a8\u597d\uff0ccan you\u76f4\u63a5\u4e00\u70b9\u3002\u770b\u770b\u4eca\u5929\u4e0b\u5348\u5317\u4eac\u7684\u5929\u6c14",
+			secondFinal:   "\u60a8\u597d\uff0ccan you\u76f4\u63a5\u4e00\u70b9\u770b\u770b\u4eca\u5929\u4e0b\u5348\u5317\u4eac\u7684\u5929\u6c14\u3002\u4f60\u597d",
+			expectedDelta: "\u4f60\u597d",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			orchestrator, _, openClawClient, ttsClient, outputSink, _, sessions := newTestOrchestrator()
+
+			created, err := orchestrator.HandleStreamStart(context.Background(), pipeline.StreamStartRequest{
+				CallID: "call-incremental-" + testCase.name,
+				Caller: "erin",
+				Stream: session.StreamMeta{
+					Encoding:     "pcm_s16le",
+					SampleRateHz: 16000,
+					Channels:     1,
+				},
+			})
+			if err != nil {
+				t.Fatalf("HandleStreamStart returned error: %v", err)
+			}
+
+			if err := orchestrator.HandleTranscriptFinal(context.Background(), created.ID, testCase.firstFinal); err != nil {
+				t.Fatalf("first HandleTranscriptFinal returned error: %v", err)
+			}
+			if err := orchestrator.HandleTranscriptFinal(context.Background(), created.ID, testCase.secondFinal); err != nil {
+				t.Fatalf("second HandleTranscriptFinal returned error: %v", err)
+			}
+
+			if len(openClawClient.replies) != 2 {
+				t.Fatalf("expected 2 openclaw calls, got %d", len(openClawClient.replies))
+			}
+			if openClawClient.replies[0].transcript != testCase.firstFinal {
+				t.Fatalf("unexpected first openclaw transcript %q", openClawClient.replies[0].transcript)
+			}
+			if openClawClient.replies[1].transcript != testCase.expectedDelta {
+				t.Fatalf("unexpected incremental transcript %q", openClawClient.replies[1].transcript)
+			}
+			if len(ttsClient.synthCalls) != 2 {
+				t.Fatalf("expected 2 tts synthesis calls, got %d", len(ttsClient.synthCalls))
+			}
+			if ttsClient.synthCalls[1].text != "reply:"+testCase.expectedDelta {
+				t.Fatalf("unexpected second synthesized text %q", ttsClient.synthCalls[1].text)
+			}
+			if len(outputSink.playCalls) != 2 {
+				t.Fatalf("expected 2 output playback calls, got %d", len(outputSink.playCalls))
+			}
+
+			current, ok := sessions.Get(created.ID)
+			if !ok {
+				t.Fatal("expected session to still exist")
+			}
+			if current.LastSentToOpenClaw != testCase.secondFinal {
+				t.Fatalf("expected tracked transcript %q, got %q", testCase.secondFinal, current.LastSentToOpenClaw)
+			}
+		})
+	}
 }
 
 func TestOrchestratorAudioFrameInterruptsSpeakingState(t *testing.T) {

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"bridgewithclawandfreeswitch/backend/internal/contract"
 	"bridgewithclawandfreeswitch/backend/internal/openclaw"
@@ -155,9 +158,18 @@ func (o *Orchestrator) HandleTranscriptFinal(ctx context.Context, sessionID stri
 	}
 	log.Printf("orchestrator transcript final start session=%s transcript=%q", sessionID, transcript)
 
-	thinking, err := o.sessions.Update(sessionID, func(current *session.Session) error {
-		current.State = session.StateThinking
+	var (
+		delta        string
+		previousSent string
+	)
+	updated, err := o.sessions.Update(sessionID, func(current *session.Session) error {
+		previousSent = strings.TrimSpace(current.LastSentToOpenClaw)
+		delta = incrementalTranscript(current.LastSentToOpenClaw, transcript)
 		current.LastTranscript = transcript
+		if delta != "" {
+			current.State = session.StateThinking
+			current.LastSentToOpenClaw = strings.TrimSpace(transcript)
+		}
 		return nil
 	})
 	if err != nil {
@@ -169,15 +181,20 @@ func (o *Orchestrator) HandleTranscriptFinal(ctx context.Context, sessionID stri
 	o.events.Broadcast(
 		bridgews.EventSessionUpdated,
 		sessionID,
-		bridgews.SessionPayload(contract.SessionSummaryFromSession(thinking)),
+		bridgews.SessionPayload(contract.SessionSummaryFromSession(updated)),
 	)
+	if delta == "" {
+		log.Printf("orchestrator transcript final skip openclaw session=%s previous=%q current=%q", sessionID, previousSent, strings.TrimSpace(transcript))
+		return nil
+	}
 
-	reply, err := o.openClaw.Reply(ctx, sessionID, transcript)
+	log.Printf("orchestrator openclaw request session=%s previous=%q current=%q delta=%q", sessionID, previousSent, strings.TrimSpace(transcript), delta)
+	reply, err := o.openClaw.Reply(ctx, sessionID, delta)
 	if err != nil {
 		log.Printf("orchestrator openclaw reply failed session=%s: %v", sessionID, err)
 		return err
 	}
-	log.Printf("orchestrator openclaw reply ok session=%s reply=%q", sessionID, reply)
+	log.Printf("orchestrator openclaw reply ok session=%s delta=%q reply=%q", sessionID, delta, reply)
 
 	audio, err := o.tts.Synthesize(ctx, sessionID, reply)
 	if err != nil {
@@ -214,6 +231,74 @@ func (o *Orchestrator) HandleTranscriptFinal(ctx context.Context, sessionID stri
 	log.Printf("orchestrator transcript final done session=%s", sessionID)
 
 	return nil
+}
+
+func incrementalTranscript(lastSent string, transcript string) string {
+	current := strings.TrimSpace(transcript)
+	previous := strings.TrimSpace(lastSent)
+	if current == "" {
+		return ""
+	}
+	if previous == "" {
+		return current
+	}
+	if current == previous {
+		return ""
+	}
+	if strings.HasPrefix(current, previous) {
+		return trimDeltaPrefix(current[len(previous):])
+	}
+	if end, ok := normalizedPrefixEnd(previous, current); ok {
+		return trimDeltaPrefix(current[end:])
+	}
+	return current
+}
+
+func normalizedPrefixEnd(previous string, current string) (int, bool) {
+	prevIndex := 0
+	currIndex := 0
+
+	for {
+		prevIndex = skipIgnorableRunes(previous, prevIndex)
+		if prevIndex >= len(previous) {
+			return currIndex, true
+		}
+
+		currIndex = skipIgnorableRunes(current, currIndex)
+		if currIndex >= len(current) {
+			return 0, false
+		}
+
+		prevRune, prevSize := utf8.DecodeRuneInString(previous[prevIndex:])
+		currRune, currSize := utf8.DecodeRuneInString(current[currIndex:])
+		if prevRune != currRune {
+			return 0, false
+		}
+
+		prevIndex += prevSize
+		currIndex += currSize
+	}
+}
+
+func skipIgnorableRunes(value string, index int) int {
+	for index < len(value) {
+		r, size := utf8.DecodeRuneInString(value[index:])
+		if !isIgnorableTranscriptRune(r) {
+			return index
+		}
+		index += size
+	}
+	return index
+}
+
+func isIgnorableTranscriptRune(r rune) bool {
+	return unicode.IsSpace(r) || unicode.IsPunct(r)
+}
+
+func trimDeltaPrefix(delta string) string {
+	trimmed := strings.TrimSpace(delta)
+	trimmed = strings.TrimLeftFunc(trimmed, isIgnorableTranscriptRune)
+	return strings.TrimSpace(trimmed)
 }
 
 func (o *Orchestrator) Interrupt(ctx context.Context, sessionID string) error {

@@ -197,6 +197,12 @@ For a real streamed call, verify this sequence from browser DevTools and the pag
 6. `session.tts.stopped` returns the session to listening after interrupt
 7. `session.closed` eventually closes the session after hangup
 
+For the current frontend behavior:
+
+- Dashboard still trusts `session.transcript.final` as the complete utterance and does not aggregate partials
+- SessionDetail aggregates repeated partial frames so incremental STT updates remain readable while recognition is in progress
+- Verifying what OpenClaw actually received still requires backend log or request inspection; the frontend can only confirm the UI-side transcript rendering
+
 ### 7. Settings page verification
 
 Expected:

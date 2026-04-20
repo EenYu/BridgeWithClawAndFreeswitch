@@ -26,16 +26,18 @@ type StreamMeta struct {
 }
 
 type Session struct {
-	ID             string           `json:"id"`
-	CallID         string           `json:"callId"`
-	Caller         string           `json:"caller"`
-	State          SessionState     `json:"state"`
-	StartedAt      time.Time        `json:"startedAt"`
-	UpdatedAt      time.Time        `json:"updatedAt"`
-	ClosedAt       *time.Time       `json:"closedAt,omitempty"`
-	LastTranscript string           `json:"lastTranscript,omitempty"`
-	Providers      ProviderBindings `json:"providers"`
-	Stream         StreamMeta       `json:"stream"`
+	ID             string       `json:"id"`
+	CallID         string       `json:"callId"`
+	Caller         string       `json:"caller"`
+	State          SessionState `json:"state"`
+	StartedAt      time.Time    `json:"startedAt"`
+	UpdatedAt      time.Time    `json:"updatedAt"`
+	ClosedAt       *time.Time   `json:"closedAt,omitempty"`
+	LastTranscript string       `json:"lastTranscript,omitempty"`
+	// LastSentToOpenClaw 只用于后端增量裁剪，避免累计 final 重复送入对话模型。
+	LastSentToOpenClaw string           `json:"-"`
+	Providers          ProviderBindings `json:"providers"`
+	Stream             StreamMeta       `json:"stream"`
 }
 
 func (s *Session) Clone() *Session {

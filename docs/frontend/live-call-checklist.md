@@ -86,6 +86,14 @@ Expected UI outcome:
 - Dashboard row updates `lastTranscript`
 - SessionDetail transcript timeline shows the recognized text
 
+Incremental STT validation:
+
+1. Use a phrase with obvious pauses, for example: `帮我查一下 / 今天上海天气 / 再说一遍`
+2. In the `/ws` frame stream, confirm consecutive `session.transcript.partial` payloads contain only newly appended text when backend is in incremental mode
+3. In SessionDetail, confirm the visible partial transcript still grows into one readable sentence instead of only showing the latest fragment
+4. Confirm `session.transcript.final.text` is still the full readable utterance, and Dashboard `lastTranscript` matches the final text
+5. Cross-check backend logs or the OpenClaw request trace to confirm the text sent downstream is the current utterance only, not accumulated multi-turn history; the frontend page alone cannot prove this step
+
 ### Step 4. Observe the TTS response
 
 Action:
@@ -170,5 +178,8 @@ For one successful live call, confirm this sequence is visible from the browser:
 - No Dashboard row: check `session.created` is emitted and parsed
 - Row appears but detail is empty: check `GET /api/sessions/{id}`
 - Transcript events visible but UI unchanged: check adapter logic for transcript payload
+- Partial frames are incremental but SessionDetail only shows the latest fragment: check the partial aggregation path in `frontend/src/pages/SessionDetail.tsx`
+- Dashboard `lastTranscript` differs from SessionDetail final text: treat `session.transcript.final` as a contract drift first, because Dashboard intentionally still trusts final as the complete utterance
+- OpenClaw behavior is wrong but frontend looks normal: inspect backend logs or OpenClaw request traces, because UI cannot independently prove the downstream transcript payload
 - Interrupt request succeeds but UI stays speaking: check `session.tts.stopped` and follow-up `session.updated`
 - Events out of order: inspect raw `/ws` frames first, then compare with page state
